@@ -8,7 +8,12 @@ const nodemailer = require('nodemailer');
 const bcrypt = require('bcryptjs');
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: ['https://caseverity-frontend.vercel.app', 'http://localhost:3000'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
 app.use(express.json());
 
 const upload = multer({ storage: multer.memoryStorage() });
