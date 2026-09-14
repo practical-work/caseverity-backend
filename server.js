@@ -22,9 +22,19 @@ mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('✅ MongoDB Connected'))
   .catch(err => console.log('❌ DB Error:', err));
 
+// Explicit SMTP configuration to fix ETIMEDOUT on Render
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
+  host: 'smtp.gmail.com',
+  port: 465,
+  secure: true,
+  auth: { 
+    user: process.env.EMAIL_USER, 
+    pass: process.env.EMAIL_PASS 
+  },
+  tls: {
+    rejectUnauthorized: false
+  },
+  connectionTimeout: 20000
 });
 
 const accessRequestSchema = new mongoose.Schema({
@@ -82,10 +92,11 @@ app.post('/api/auth/request-access', async (req, res) => {
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     
+    // Updated Mongoose syntax to resolve warnings
     await AccessRequest.findOneAndUpdate(
       { email: cleanEmail },
       { fullName, phone, department, state, requestedRole, otp, otpExpiry: Date.now() + 10 * 60000, status: 'PENDING_VERIFICATION' },
-      { upsert: true, new: true }
+      { upsert: true, returnDocument: 'after' }
     );
 
     await transporter.sendMail({
@@ -98,7 +109,6 @@ app.post('/api/auth/request-access', async (req, res) => {
     res.json({ message: 'OTP sent successfully.' });
   } catch (err) { 
     console.error("🔥 OTP Error:", err);
-    // Explicitly sends the exact crash reason back to the frontend alert box
     res.status(500).json({ message: `System Error: ${err.message}` }); 
   }
 });
