@@ -1,334 +1,256 @@
-import React, { useState, useEffect } from 'react';
-import axios from 'axios';
-import './App.css';
+require('dotenv').config();
+const express = require('express');
+const mongoose = require('mongoose');
+const cors = require('cors');
+const multer = require('multer');
+const crypto = require('crypto');
+const nodemailer = require('nodemailer');
+const bcrypt = require('bcryptjs');
 
-function App() {
-  const [currentView, setCurrentView] = useState('LANDING'); 
-  const [user, setUser] = useState('');
-  const [role, setRole] = useState('');
-  
-  // Strict UI state for locking buttons and showing spinners
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [showDemoGuide, setShowDemoGuide] = useState(true); 
-  
-  const [regForm, setRegForm] = useState({ fullName: '', email: '', phone: '', department: 'Cyber Crime', state: 'Haryana', requestedRole: 'Investigating Officer' });
-  const [otpCode, setOtpCode] = useState('');
-  const [loginForm, setLoginForm] = useState({ email: '', password: '' });
-  
-  const [pendingRequests, setPendingRequests] = useState([]);
-  const [activeUsers, setActiveUsers] = useState([]);
-  const [auditLogs, setAuditLogs] = useState([]);
-  const [searchQuery, setSearchQuery] = useState('');
-  
-  const [file, setFile] = useState(null);
-  const [caseId, setCaseId] = useState('CASE-2026-001');
-  const [uploadData, setUploadData] = useState(null);
-  const [verifyDocId, setVerifyDocId] = useState('');
-  const [verifyHash, setVerifyHash] = useState('');
-  const [verifyResult, setVerifyResult] = useState(null);
+// CRITICAL FIX: Force Node.js to use IPv4 instead of IPv6 for all network requests.
+// This completely stops the "connect ENETUNREACH 2607:..." error on Render.
+const dns = require('dns');
+dns.setDefaultResultOrder('ipv4first');
 
-  // Dynamic API URL depending on deployment environment
-  const API_URL = window.location.hostname === 'localhost' ? 'http://localhost:5000/api' : 'https://caseverity-backend.onrender.com/api';
+const app = express();
+app.use(cors({
+  origin: ['https://caseverity-frontend.vercel.app', 'http://localhost:3000'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
+app.use(express.json());
 
-  useEffect(() => {
-    if (currentView === 'ADMIN_DASH') { fetchPendingRequests(); fetchActiveUsers(); }
-    if (currentView === 'OFFICER_DASH' || currentView === 'ADMIN_DASH') fetchLogs();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentView]);
+const upload = multer({ storage: multer.memoryStorage() });
 
-  const handleRequestAccess = async (e) => {
-    e.preventDefault();
-    setIsProcessing(true); // Lock the UI immediately
-    try { 
-      await axios.post(`${API_URL}/auth/request-access`, regForm); 
-      setCurrentView('OTP_VERIFY'); 
-    } catch (err) { 
-      // Safely catch errors even if the network connection drops entirely
-      const errorMessage = err.response?.data?.message || err.message || "Network Error: Could not connect to the server. Please try again.";
-      alert(errorMessage); 
-    } finally {
-      setIsProcessing(false); // Unlock the UI
-    }
-  };
+mongoose.connect(process.env.MONGO_URI)
+  .then(() => console.log('✅ MongoDB Connected'))
+  .catch(err => console.log('❌ DB Error:', err));
 
-  const handleVerifyOTP = async (e) => {
-    e.preventDefault();
-    setIsProcessing(true);
-    try {
-      const res = await axios.post(`${API_URL}/auth/verify-otp`, { email: regForm.email, otp: otpCode });
-      alert(res.data.message); 
-      setCurrentView('LANDING');
-    } catch (err) { 
-      const errorMessage = err.response?.data?.message || "Invalid or expired OTP";
-      alert(errorMessage); 
-    } finally {
-      setIsProcessing(false);
-    }
-  };
+const transporter = nodemailer.createTransport({
+  host: 'smtp.gmail.com',
+  port: 465,
+  secure: true,
+  auth: { 
+    user: process.env.EMAIL_USER, 
+    pass: process.env.EMAIL_PASS 
+  },
+  tls: {
+    rejectUnauthorized: false
+  },
+  connectionTimeout: 20000,
+  family: 4 
+});
 
-  const handleLogin = async (e, isAdmin = false) => {
-    e.preventDefault();
-    setIsProcessing(true);
-    try {
-      const sanitizedPayload = { email: loginForm.email.trim(), password: loginForm.password.trim() };
-      const res = await axios.post(`${API_URL}${isAdmin ? '/auth/admin-login' : '/auth/login'}`, sanitizedPayload);
-      setUser(res.data.user); setRole(res.data.role);
-      setCurrentView(isAdmin ? 'ADMIN_DASH' : 'OFFICER_DASH'); 
-      setShowDemoGuide(false);
-    } catch (err) { 
-      const errorMessage = err.response?.data?.message || "Login failed due to a network error.";
-      alert(errorMessage); 
-    } finally {
-      setIsProcessing(false);
-    }
-  };
+const accessRequestSchema = new mongoose.Schema({
+  fullName: String, email: String, phone: String, department: String, state: String,
+  requestedRole: String, otp: String, otpExpiry: Date,
+  isEmailVerified: { type: Boolean, default: false },
+  status: { type: String, default: 'PENDING_VERIFICATION' } 
+});
+const AccessRequest = mongoose.model('AccessRequest', accessRequestSchema);
 
-  const fetchPendingRequests = async () => setPendingRequests((await axios.get(`${API_URL}/auth/admin/requests`)).data);
-  const fetchActiveUsers = async () => setActiveUsers((await axios.get(`${API_URL}/auth/admin/users`)).data);
-  const fetchLogs = async () => setAuditLogs((await axios.get(`${API_URL}/audit-logs`)).data);
+const userSchema = new mongoose.Schema({
+  officerId: { type: String, unique: true },
+  fullName: String, email: { type: String, unique: true },
+  passwordHash: String, role: String, department: String,
+  status: { type: String, default: 'ACTIVE' }, 
+  accessExpiry: { type: Date, default: null } 
+});
+const User = mongoose.model('User', userSchema);
 
-  const handleAdminAction = async (requestId, assignedRole, action) => {
-    let reason = '';
-    if (action === 'REJECT') {
-      reason = window.prompt("Enter reason for rejection:");
-      if (!reason) return;
-    }
-    try {
-      await axios.post(`${API_URL}/auth/admin/action`, { requestId, action, assignedRole, reason });
-      fetchPendingRequests(); 
-      alert(action === 'APPROVE' ? `Access Approved for ${assignedRole}. Credentials dispatched.` : `Request Rejected. Email sent.`);
-    } catch (err) {
-      alert(err.response?.data?.message || "Action failed.");
-    }
-  };
+const documentSchema = new mongoose.Schema({
+  caseId: String, fileName: String, fileHash: String, 
+  uploadedBy: String, department: String, version: { type: Number, default: 1 },
+  timestamp: { type: Date, default: Date.now }
+});
+const Document = mongoose.model('Document', documentSchema);
 
-  const handleManageUser = async (userId, action) => {
-    if (!window.confirm(`Are you sure you want to ${action} this user?`)) return;
-    try {
-      await axios.post(`${API_URL}/auth/admin/manage-user`, { userId, action });
-      fetchActiveUsers();
-      alert(`Action ${action} completed. Email dispatched to user.`);
-    } catch (err) {
-      alert(err.response?.data?.message || "Management action failed.");
-    }
-  };
+const auditSchema = new mongoose.Schema({
+  user: String, action: String, targetId: String, currentHash: String, previousHash: String, timestamp: { type: Date, default: Date.now }
+});
+const AuditLog = mongoose.model('AuditLog', auditSchema);
 
-  const handleUpload = async (e) => {
-    e.preventDefault();
-    const formData = new FormData();
-    formData.append('file', file); formData.append('caseId', caseId); formData.append('user', user);
-    try {
-      const res = await axios.post(`${API_URL}/documents/upload`, formData);
-      setUploadData(res.data); setVerifyDocId(res.data.documentId); setVerifyHash(res.data.fileHash); fetchLogs();
-    } catch (err) {
-      alert(err.response?.data?.message || "Upload failed.");
-    }
-  };
-
-  const handleVerify = async (e) => {
-    e.preventDefault();
-    try {
-      const res = await axios.post(`${API_URL}/documents/verify`, { documentId: verifyDocId.trim(), providedHash: verifyHash.trim(), user });
-      setVerifyResult({ type: 'success', message: res.data.message });
-    } catch (err) { 
-      const errorText = err.response?.data?.message || err.response?.data?.error || "Verification failed. Please check the Document ID and Hash.";
-      setVerifyResult({ type: 'danger', message: errorText }); 
-    }
-    fetchLogs();
-  };
-
-  const DemoGuide = () => {
-    if (!showDemoGuide) return null;
-    return (
-      <div className="premium-popup">
-        <button className="close-popup-btn" onClick={() => setShowDemoGuide(false)}>✖</button>
-        <h3>💡 SIH 2026 Demo Guide</h3>
-        <p><strong>Admin:</strong> admin@caseverity.gov.in / Admin@2026</p>
-        <p style={{ marginTop: '10px' }}><strong>Step-by-Step Flow:</strong></p>
-        <ul className="guide-list">
-          <li>1. Click <b>"Request Access"</b>.</li>
-          <li>2. Get OTP. "Pending Details" email is sent.</li>
-          <li>3. Click <b>"Administrator Portal"</b> & Login.</li>
-          <li>4. Use <b>Approve/Reject/Revoke</b> controls.</li>
-          <li>5. Login using <b>Officer ID</b> sent via email!</li>
-        </ul>
-      </div>
-    );
-  };
-
-  if (currentView === 'LANDING') {
-    return (
-      <div className="landing-container">
-        <DemoGuide />
-        <div className="landing-overlay">
-          <div className="landing-content">
-            <h1 className="main-heading">CASEVERITY</h1>
-            <h3 className="sub-heading">Secure Digital Document Management System</h3>
-            <div className="landing-actions">
-              <button className="btn btn-primary" onClick={() => setCurrentView('LOGIN')}>Official Login</button>
-              <button className="btn btn-secondary" onClick={() => setCurrentView('REQUEST_ACCESS')}>Request Access</button>
-            </div>
-            <div className="admin-link" onClick={() => setCurrentView('ADMIN_LOGIN')}>System Administrator Portal</div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (currentView === 'REQUEST_ACCESS') {
-    return (
-      <div className="login-wrapper">
-        <DemoGuide />
-        <div className="card login-card request-card">
-          <h2 className="section-title">Access Request</h2><span className="section-subtitle">Identity & Affiliation Verification</span>
-          <form onSubmit={handleRequestAccess}>
-            <div className="form-group"><label>Full Name</label><input type="text" className="form-control" value={regForm.fullName} onChange={e => setRegForm({...regForm, fullName: e.target.value})} required disabled={isProcessing}/></div>
-            <div className="form-group"><label>Official Email (For OTP)</label><input type="email" className="form-control" value={regForm.email} onChange={e => setRegForm({...regForm, email: e.target.value})} required disabled={isProcessing}/></div>
-            <div className="responsive-flex">
-              <div className="form-group"><label>Mobile</label><input type="text" className="form-control" value={regForm.phone} onChange={e => setRegForm({...regForm, phone: e.target.value})} required disabled={isProcessing}/></div>
-              <div className="form-group"><label>Requested Role</label>
-                <select className="form-control" value={regForm.requestedRole} onChange={e => setRegForm({...regForm, requestedRole: e.target.value})} disabled={isProcessing}>
-                  <option value="Investigating Officer">Investigating Officer</option><option value="Forensic Officer">Forensic Officer</option><option value="Public Prosecutor">Public Prosecutor</option>
-                </select>
-              </div>
-            </div>
-            <div className="form-group"><label>Affiliation Proof (PDF/JPG)</label><input type="file" className="form-control" required disabled={isProcessing}/></div>
-            <button type="submit" className="btn btn-primary btn-spacing" disabled={isProcessing}>
-              {isProcessing ? <><span className="spinner"></span> Processing OTP...</> : 'Generate Email OTP'}
-            </button>
-            <button type="button" className="btn btn-secondary btn-spacing" onClick={() => setCurrentView('LANDING')} disabled={isProcessing}>Cancel</button>
-          </form>
-        </div>
-      </div>
-    );
-  }
-
-  if (currentView === 'OTP_VERIFY') {
-    return (
-      <div className="login-wrapper">
-        <div className="card login-card">
-          <h2 className="section-title">Verify Email</h2><span className="section-subtitle">Enter code sent to {regForm.email}</span>
-          <form onSubmit={handleVerifyOTP}>
-            <div className="form-group"><input type="text" className="form-control otp-input" placeholder="000000" onChange={e => setOtpCode(e.target.value)} required disabled={isProcessing}/></div>
-            <button type="submit" className="btn btn-primary" disabled={isProcessing}>
-              {isProcessing ? <><span className="spinner"></span> Verifying...</> : 'Verify & Submit Request'}
-            </button>
-          </form>
-        </div>
-      </div>
-    );
-  }
-
-  if (currentView === 'LOGIN' || currentView === 'ADMIN_LOGIN') {
-    const isAdmin = currentView === 'ADMIN_LOGIN';
-    return (
-      <div className="login-wrapper">
-        <DemoGuide />
-        <div className="card login-card">
-          <h2 className="section-title">{isAdmin ? 'Administrator Portal' : 'Official Portal'}</h2>
-          <form onSubmit={(e) => handleLogin(e, isAdmin)}>
-            <div className="form-group"><label>{isAdmin ? 'Admin ID' : 'Officer ID / Official Email'}</label><input type="text" className="form-control" value={loginForm.email} onChange={e => setLoginForm({...loginForm, email: e.target.value})} required disabled={isProcessing}/></div>
-            <div className="form-group"><label>Password</label><input type="password" className="form-control" value={loginForm.password} onChange={e => setLoginForm({...loginForm, password: e.target.value})} required disabled={isProcessing}/></div>
-            <button type="submit" className="btn btn-primary btn-spacing" disabled={isProcessing}>
-              {isProcessing ? <><span className="spinner"></span> Authenticating...</> : 'Authenticate'}
-            </button>
-            <button type="button" className="btn btn-secondary btn-spacing" onClick={() => setCurrentView('LANDING')} disabled={isProcessing}>Back</button>
-          </form>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="app-layout">
-      <nav className="top-nav"><div className="nav-brand"><h1>CaseVerity</h1></div><div className="nav-user">{user} | {role} <button className="btn-logout" onClick={() => setCurrentView('LANDING')}>Logout</button></div></nav>
-      <main className="main-container">
-        {role === 'Administrator' && (
-          <>
-            <div className="card full-width bottom-spacing">
-              <h2 className="section-title">Pending Access Requests</h2>
-              <div className="table-wrapper">
-                <table className="data-table">
-                  <thead><tr><th>Applicant</th><th>Role & Dept</th><th>Action</th></tr></thead>
-                  <tbody>
-                    {pendingRequests.map(req => (
-                      <tr key={req._id}>
-                        <td><strong>{req.fullName}</strong><br/>{req.email}</td><td><span className="action-badge">{req.requestedRole}</span><br/><small>{req.department}</small></td>
-                        <td className="action-td">
-                          <button className="btn btn-primary action-btn" onClick={() => handleAdminAction(req._id, req.requestedRole, 'APPROVE')}>Approve</button>
-                          <button className="btn btn-secondary action-btn" style={{borderColor: '#ff6b6b', color: '#ff6b6b'}} onClick={() => handleAdminAction(req._id, req.requestedRole, 'REJECT')}>Reject</button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-            <div className="card full-width bottom-spacing">
-              <h2 className="section-title">Active Personnel & Access Control</h2>
-              <div className="table-wrapper">
-                <table className="data-table">
-                  <thead><tr><th>Officer Details</th><th>System Status</th><th>Security Action</th></tr></thead>
-                  <tbody>
-                    {activeUsers.map(u => (
-                      <tr key={u._id}>
-                        <td><strong>{u.officerId}</strong><br/>{u.fullName}<br/><span className="action-badge">{u.role}</span></td>
-                        <td><span style={{ color: u.status === 'ACTIVE' ? '#0f5132' : '#bf2600', fontWeight: 'bold' }}>{u.status}</span></td>
-                        <td className="action-td">
-                          {u.status === 'ACTIVE' ? (
-                            <><button className="btn btn-secondary action-btn" style={{borderColor: '#ff6b6b', color: '#ff6b6b'}} onClick={() => handleManageUser(u._id, 'REVOKE')}>Revoke</button>
-                            <button className="btn btn-secondary action-btn" style={{borderColor: '#f59e0b', color: '#f59e0b'}} onClick={() => handleManageUser(u._id, 'EXPIRE')}>Expire Now</button></>
-                          ) : (<button className="btn btn-primary action-btn" style={{background: '#10b981', borderColor: 'transparent'}} onClick={() => handleManageUser(u._id, 'REACTIVATE')}>Reactivate</button>)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </>
-        )}
-        {role !== 'Administrator' && (
-          <div className="dashboard-grid">
-            <div className="card">
-              <h2 className="section-title">Evidence Intake</h2>
-              <form onSubmit={handleUpload}>
-                <div className="form-group"><label>Case ID</label><input type="text" className="form-control" value={caseId} onChange={e => setCaseId(e.target.value)} /></div>
-                <div className="form-group"><label>Document</label><input type="file" className="form-control" onChange={e => setFile(e.target.files[0])} required /></div>
-                <button type="submit" className="btn btn-primary">Generate Hash & Store</button>
-              </form>
-              {uploadData && <div className="alert-box alert-success"><strong>ID:</strong> {uploadData.documentId} <br/><strong>V{uploadData.version} Hash:</strong> <br/><span className="hash-badge responsive-hash">{uploadData.fileHash}</span></div>}
-            </div>
-            <div className="card">
-              <h2 className="section-title">Integrity Verification</h2>
-              <form onSubmit={handleVerify}>
-                <div className="form-group"><label>Document ID</label><input type="text" className="form-control" value={verifyDocId} onChange={e => setVerifyDocId(e.target.value)} required /></div>
-                <div className="form-group"><label>SHA-256 Hash</label><input type="text" className="form-control" value={verifyHash} onChange={e => setVerifyHash(e.target.value)} required /></div>
-                <button type="submit" className="btn btn-secondary">Compare Hash</button>
-              </form>
-              {verifyResult && <div className={`alert-box ${verifyResult.type === 'success' ? 'alert-success' : 'alert-danger'}`}>{verifyResult.message}</div>}
-            </div>
-          </div>
-        )}
-        <div className="card full-width top-spacing">
-          <div className="table-header-flex"><h2 className="section-title">Cryptographic Audit Ledger</h2><input type="text" className="form-control search-bar" placeholder="🔍 Search logs..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} /></div>
-          <div className="table-wrapper">
-            <table className="data-table">
-              <thead><tr><th>Timestamp</th><th>User/Actor</th><th>Action</th><th>Chain Hash</th></tr></thead>
-              <tbody>
-                {auditLogs.filter(log => log.action.includes(searchQuery) || log.user.includes(searchQuery)).map(log => (
-                  <tr key={log._id}>
-                    <td>{new Date(log.timestamp).toLocaleDateString()} {new Date(log.timestamp).toLocaleTimeString()}</td><td><strong>{log.user}</strong></td><td><span className="action-badge">{log.action}</span></td><td><span className="hash-badge" title={log.currentHash}>{log.currentHash.substring(0, 16)}...</span></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </main>
-      <footer className="dev-footer">Developed by <strong>CaseArmor</strong> | SIH 2026</footer>
-    </div>
-  );
+async function createAuditLog(user, action, targetId, currentHash) {
+  const lastLog = await AuditLog.findOne().sort({ timestamp: -1 });
+  const previousHash = lastLog ? lastLog.currentHash : 'GENESIS_BLOCK';
+  const newLog = new AuditLog({ user, action, targetId, currentHash, previousHash });
+  await newLog.save();
 }
-export default App;
+
+app.post('/api/auth/request-access', async (req, res) => {
+  try {
+    const { fullName, email, phone, department, state, requestedRole } = req.body;
+    if (!email || !phone) return res.status(400).json({ message: 'Email and phone required.' });
+
+    const cleanEmail = email.trim().toLowerCase();
+
+    const existingUser = await User.findOne({ email: cleanEmail });
+    if (existingUser && existingUser.status === 'ACTIVE') {
+      return res.status(400).json({ message: 'Access Denied: Active account already exists.' });
+    }
+
+    const existingRequest = await AccessRequest.findOne({ email: cleanEmail });
+    if (existingRequest && existingRequest.status === 'PENDING_APPROVAL') {
+      return res.status(400).json({ message: 'Access Denied: Waiting for Administrator approval.' });
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
     
+    await AccessRequest.findOneAndUpdate(
+      { email: cleanEmail },
+      { fullName, phone, department, state, requestedRole, otp, otpExpiry: Date.now() + 10 * 60000, status: 'PENDING_VERIFICATION' },
+      { upsert: true, returnDocument: 'after' }
+    );
+
+    await transporter.sendMail({
+      from: `"CaseVerity Admin" <${process.env.EMAIL_USER}>`,
+      to: cleanEmail, 
+      subject: 'CaseVerity - Verification OTP',
+      html: `<h3>Your Verification Code</h3><p>Your OTP is <b>${otp}</b>. It expires in 10 minutes.</p>`
+    });
+    
+    res.json({ message: 'OTP sent successfully.' });
+  } catch (err) { 
+    console.error("🔥 OTP Error:", err);
+    res.status(500).json({ message: `System Error: ${err.message}` }); 
+  }
+});
+
+app.post('/api/auth/verify-otp', async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+    if (!email || !otp) return res.status(400).json({ message: 'Missing email or OTP.' });
+
+    const cleanEmail = email.trim().toLowerCase();
+    const request = await AccessRequest.findOne({ email: cleanEmail, otp, otpExpiry: { $gt: Date.now() } });
+    
+    if (!request) return res.status(400).json({ message: 'Invalid or expired OTP.' });
+
+    request.isEmailVerified = true; request.status = 'PENDING_APPROVAL'; request.otp = undefined;
+    await request.save();
+
+    await transporter.sendMail({
+      from: `"CaseVerity" <${process.env.EMAIL_USER}>`,
+      to: cleanEmail, subject: 'CaseVerity - Request Pending Approval',
+      html: `<h3>Request Successfully Submitted</h3><p>Your request is <b>PENDING APPROVAL</b> from the System Administrator.</p>`
+    });
+    res.json({ message: 'Email verified. Details sent to your email.' });
+  } catch (err) { 
+    res.status(500).json({ message: `Verification failed: ${err.message}` }); 
+  }
+});
+
+app.post('/api/auth/admin-login', (req, res) => {
+  const email = req.body.email?.trim();
+  const password = req.body.password?.trim();
+  if (email === 'admin@caseverity.gov.in' && password === 'Admin@2026') {
+    res.json({ role: 'Administrator', user: 'System Admin' });
+  } else {
+    res.status(401).json({ message: 'Invalid Admin Credentials' });
+  }
+});
+
+app.get('/api/auth/admin/requests', async (req, res) => res.json(await AccessRequest.find({ status: 'PENDING_APPROVAL' })));
+app.get('/api/auth/admin/users', async (req, res) => res.json(await User.find()));
+
+app.post('/api/auth/admin/action', async (req, res) => {
+  try {
+    const { requestId, action, assignedRole, reason } = req.body;
+    const request = await AccessRequest.findById(requestId);
+    
+    if (action === 'REJECT') {
+      request.status = 'REJECTED'; await request.save();
+      await transporter.sendMail({
+        from: `"CaseVerity Admin" <${process.env.EMAIL_USER}>`,
+        to: request.email, subject: 'CaseVerity - Access Request Rejected',
+        html: `<h3>Request Rejected</h3><p>Your access request has been rejected.</p><p><b>Reason:</b> ${reason}</p>`
+      });
+      return res.json({ message: 'Request rejected and email sent.' });
+    }
+
+    const prefix = assignedRole.includes('Investigating') ? 'IO' : assignedRole.includes('Forensic') ? 'FO' : 'PP';
+    const specialId = `${prefix}-${Math.floor(1000 + Math.random() * 9000)}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
+    const strongPassword = `Case#${crypto.randomBytes(3).toString('hex')}!`;
+    const passwordHash = await bcrypt.hash(strongPassword, 10);
+
+    const newUser = new User({ officerId: specialId, fullName: request.fullName, email: request.email, passwordHash, role: assignedRole, department: request.department });
+    await newUser.save();
+    request.status = 'APPROVED'; await request.save();
+
+    await transporter.sendMail({
+      from: `"CaseVerity Admin" <${process.env.EMAIL_USER}>`,
+      to: request.email, subject: 'CaseVerity - Access Approved',
+      html: `<h3>Access Approved</h3><p><b>Officer ID:</b> ${specialId}</p><p><b>Secure Password:</b> ${strongPassword}</p>`
+    });
+    res.json({ message: 'Approved. ID and Password dispatched.' });
+  } catch (err) { res.status(500).json({ message: `Action failed: ${err.message}` }); }
+});
+
+app.post('/api/auth/admin/manage-user', async (req, res) => {
+  try {
+    const { userId, action } = req.body;
+    const user = await User.findById(userId);
+    
+    if (action === 'REVOKE') {
+      user.status = 'REVOKED'; await user.save();
+      await transporter.sendMail({ from: `"CaseVerity Admin" <${process.env.EMAIL_USER}>`, to: user.email, subject: 'CaseVerity - Access Revoked', html: `<p>SECURITY ALERT: Your system access has been officially REVOKED by the Administrator.</p>` });
+      return res.json({ message: 'User access revoked successfully.' });
+    }
+    if (action === 'EXPIRE') {
+      user.status = 'EXPIRED'; await user.save();
+      await transporter.sendMail({ from: `"CaseVerity Admin" <${process.env.EMAIL_USER}>`, to: user.email, subject: 'CaseVerity - Access Expired', html: `<p>NOTICE: Your system access has EXPIRED.</p>` });
+      return res.json({ message: 'User status set to EXPIRED.' });
+    }
+    if (action === 'REACTIVATE') {
+      user.status = 'ACTIVE'; user.accessExpiry = null; await user.save();
+      return res.json({ message: 'User access restored.' });
+    }
+  } catch(err) { res.status(500).json({ message: `Management action failed: ${err.message}` }); }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    if (!req.body.email || !req.body.password) return res.status(400).json({ message: 'Missing credentials.' });
+    const emailOrId = req.body.email.trim();
+    const user = await User.findOne({ $or: [{ email: emailOrId.toLowerCase() }, { officerId: emailOrId }] });
+    
+    if (!user || !(await bcrypt.compare(req.body.password.trim(), user.passwordHash))) return res.status(401).json({ message: 'Invalid credentials' });
+    if (user.status === 'REVOKED') return res.status(403).json({ message: 'ACCESS DENIED: Account revoked.' });
+    if (user.status === 'EXPIRED') return res.status(403).json({ message: 'ACCESS DENIED: Authorization expired.' });
+
+    res.json({ role: user.role, user: user.fullName, department: user.department });
+  } catch (err) { res.status(500).json({ message: `Login failed: ${err.message}` }); }
+});
+
+app.post('/api/documents/upload', upload.single('file'), async (req, res) => {
+  try {
+    const { caseId, user, department } = req.body;
+    const hash = crypto.createHash('sha256').update(req.file.buffer).digest('hex');
+    const version = (await Document.find({ caseId, fileName: req.file.originalname })).length + 1;
+    const newDoc = new Document({ caseId, fileName: req.file.originalname, fileHash: hash, uploadedBy: user, department, version });
+    await newDoc.save();
+    await createAuditLog(user, `DOCUMENT_UPLOADED_V${version}`, newDoc._id, hash);
+    res.json({ message: 'Document secured', documentId: newDoc._id, fileHash: hash, version });
+  } catch (error) { res.status(500).json({ message: `Upload failed: ${error.message}` }); }
+});
+
+app.post('/api/documents/verify', async (req, res) => {
+  try {
+    const { documentId, providedHash, user } = req.body;
+    const doc = await Document.findById(documentId?.trim());
+    if (!doc) return res.status(404).json({ message: 'Document not found' });
+    if (doc.fileHash === providedHash?.trim()) {
+      await createAuditLog(user || 'System', 'INTEGRITY_VERIFIED', doc._id, providedHash);
+      res.json({ message: 'Integrity Verified: Hashes match.' });
+    } else {
+      await createAuditLog(user || 'System', 'TAMPERING_DETECTED', doc._id, providedHash);
+      res.status(400).json({ message: 'Tampering Detected: Hash mismatch.' });
+    }
+  } catch (error) { res.status(500).json({ message: 'Verification failed. Check Document ID.' }); }
+});
+
+app.get('/api/audit-logs', async (req, res) => res.json(await AuditLog.find().sort({ timestamp: -1 })));
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`CaseVerity Server running on port ${PORT}`));
