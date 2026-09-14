@@ -70,23 +70,20 @@ app.post('/api/auth/request-access', async (req, res) => {
   try {
     const { fullName, email, phone, department, state, requestedRole } = req.body;
     
-    // Strict validation to prevent undefined matching
     if (!email || !phone) {
       return res.status(400).json({ message: 'Email and phone are required.' });
     }
 
     const cleanEmail = email.trim().toLowerCase();
 
-    // 1. Block if an ACTIVE User account already exists
     const existingUser = await User.findOne({ email: cleanEmail });
     if (existingUser && existingUser.status === 'ACTIVE') {
       return res.status(400).json({ message: 'Access Denied: An active official account already exists for this email.' });
     }
 
-    // 2. Block if a Request is already PENDING for THIS SPECIFIC email
     const existingRequest = await AccessRequest.findOne({ email: cleanEmail });
-    if (existingRequest && ['PENDING_VERIFICATION', 'PENDING_APPROVAL'].includes(existingRequest.status)) {
-      return res.status(400).json({ message: 'Access Denied: You already have a pending request. Please wait for Administrator action.' });
+    if (existingRequest && existingRequest.status === 'PENDING_APPROVAL') {
+      return res.status(400).json({ message: 'Access Denied: Your request is currently waiting for Administrator approval.' });
     }
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
@@ -102,7 +99,8 @@ app.post('/api/auth/request-access', async (req, res) => {
       to: cleanEmail, subject: 'CaseVerity - Verification OTP',
       html: `<h3>Your Verification Code</h3><p>Your OTP is <b>${otp}</b>. It expires in 10 minutes.</p>`
     });
-    res.json({ message: 'OTP sent.' });
+    
+    res.json({ message: 'OTP sent successfully.' });
   } catch (err) { 
     res.status(500).json({ message: 'Failed to send OTP. Please try again.' }); 
   }
@@ -228,7 +226,6 @@ app.post('/api/auth/login', async (req, res) => {
     const emailOrId = req.body.email.trim();
     const password = req.body.password.trim();
 
-    // Check both exact match for OfficerID or lowercased for email
     const user = await User.findOne({ 
       $or: [
         { email: emailOrId.toLowerCase() }, 
@@ -282,4 +279,4 @@ app.get('/api/audit-logs', async (req, res) => res.json(await AuditLog.find().so
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`CaseVerity Server running on port ${PORT}`));
-          
+                                 
