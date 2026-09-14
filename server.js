@@ -6,7 +6,6 @@ const multer = require('multer');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const bcrypt = require('bcryptjs');
-const dns = require('dns');
 
 const app = express();
 app.use(cors({
@@ -23,21 +22,17 @@ mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('✅ MongoDB Connected'))
   .catch(err => console.log('❌ DB Error:', err));
 
-// 🚀 BULLETPROOF IPv4 FIX: Forces Nodemailer's socket to strictly use IPv4
+// 🚀 CRITICAL FIX: Port 587 with secure:false forces STARTTLS, bypassing Render's Port 465 IPv6 block.
 const transporter = nodemailer.createTransport({
   host: 'smtp.gmail.com',
-  port: 465,
-  secure: true,
+  port: 587,
+  secure: false, // Required for Port 587
+  requireTLS: true,
   auth: { 
     user: process.env.EMAIL_USER, 
     pass: process.env.EMAIL_PASS 
   },
-  tls: { rejectUnauthorized: false },
-  connectionTimeout: 20000,
-  // This physically blocks IPv6 resolution for this specific connection
-  lookup: (hostname, options, callback) => {
-    dns.lookup(hostname, { ...options, family: 4 }, callback);
-  }
+  tls: { rejectUnauthorized: false }
 });
 
 const accessRequestSchema = new mongoose.Schema({
