@@ -217,19 +217,18 @@ app.post('/api/documents/upload', upload.single('file'), async (req, res) => {
 app.post('/api/documents/verify', async (req, res) => {
   try {
     const { documentId, providedHash, user } = req.body;
-    const doc = await Document.findById(documentId);
+    const doc = await Document.findById(documentId?.trim());
     if (!doc) return res.status(404).json({ message: 'Document not found' });
-    if (doc.fileHash === providedHash) {
+    if (doc.fileHash === providedHash?.trim()) {
       await createAuditLog(user || 'System', 'INTEGRITY_VERIFIED', doc._id, providedHash);
       res.json({ message: 'Integrity Verified: Hashes match.' });
     } else {
       await createAuditLog(user || 'System', 'TAMPERING_DETECTED', doc._id, providedHash);
       res.status(400).json({ message: 'Tampering Detected: Hash mismatch.' });
     }
-  } catch (error) { res.status(500).json({ message: 'Verification failed' }); }
+  } catch (error) { res.status(500).json({ message: 'Verification failed. Check Document ID.' }); }
 });
 
 app.get('/api/audit-logs', async (req, res) => res.json(await AuditLog.find().sort({ timestamp: -1 })));
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`CaseVerity Server running on port ${PORT}`));
-           
