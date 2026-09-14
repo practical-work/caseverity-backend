@@ -6,11 +6,7 @@ const multer = require('multer');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const bcrypt = require('bcryptjs');
-
-// CRITICAL FIX: Force Node.js to use IPv4 instead of IPv6 for all network requests.
-// This completely stops the "connect ENETUNREACH 2607:..." error on Render.
 const dns = require('dns');
-dns.setDefaultResultOrder('ipv4first');
 
 const app = express();
 app.use(cors({
@@ -27,6 +23,7 @@ mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('✅ MongoDB Connected'))
   .catch(err => console.log('❌ DB Error:', err));
 
+// 🚀 BULLETPROOF IPv4 FIX: Forces Nodemailer's socket to strictly use IPv4
 const transporter = nodemailer.createTransport({
   host: 'smtp.gmail.com',
   port: 465,
@@ -35,11 +32,12 @@ const transporter = nodemailer.createTransport({
     user: process.env.EMAIL_USER, 
     pass: process.env.EMAIL_PASS 
   },
-  tls: {
-    rejectUnauthorized: false
-  },
+  tls: { rejectUnauthorized: false },
   connectionTimeout: 20000,
-  family: 4 
+  // This physically blocks IPv6 resolution for this specific connection
+  lookup: (hostname, options, callback) => {
+    dns.lookup(hostname, { ...options, family: 4 }, callback);
+  }
 });
 
 const accessRequestSchema = new mongoose.Schema({
@@ -136,9 +134,7 @@ app.post('/api/auth/verify-otp', async (req, res) => {
       html: `<h3>Request Successfully Submitted</h3><p>Your request is <b>PENDING APPROVAL</b> from the System Administrator.</p>`
     });
     res.json({ message: 'Email verified. Details sent to your email.' });
-  } catch (err) { 
-    res.status(500).json({ message: `Verification failed: ${err.message}` }); 
-  }
+  } catch (err) { res.status(500).json({ message: `Verification failed: ${err.message}` }); }
 });
 
 app.post('/api/auth/admin-login', (req, res) => {
