@@ -7,6 +7,10 @@ const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const bcrypt = require('bcryptjs');
 
+// Forces Node to use IPv4 globally, bypassing Render's IPv6 ENETUNREACH blocks
+const dns = require('dns');
+dns.setDefaultResultOrder('ipv4first');
+
 const app = express();
 app.use(cors({
   origin: ['https://caseverity-frontend.vercel.app', 'http://localhost:3000'],
@@ -22,17 +26,18 @@ mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('✅ MongoDB Connected'))
   .catch(err => console.log('❌ DB Error:', err));
 
-// 🚀 CRITICAL FIX: Port 587 with secure:false forces STARTTLS, bypassing Render's Port 465 IPv6 block.
+// Robust SMTP configuration
 const transporter = nodemailer.createTransport({
   host: 'smtp.gmail.com',
-  port: 587,
-  secure: false, // Required for Port 587
-  requireTLS: true,
+  port: 465,
+  secure: true,
   auth: { 
     user: process.env.EMAIL_USER, 
     pass: process.env.EMAIL_PASS 
   },
-  tls: { rejectUnauthorized: false }
+  tls: { rejectUnauthorized: false },
+  connectionTimeout: 20000,
+  family: 4 
 });
 
 const accessRequestSchema = new mongoose.Schema({
