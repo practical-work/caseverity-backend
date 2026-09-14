@@ -34,7 +34,8 @@ const transporter = nodemailer.createTransport({
   tls: {
     rejectUnauthorized: false
   },
-  connectionTimeout: 20000
+  connectionTimeout: 20000,
+  family: 4
 });
 
 const accessRequestSchema = new mongoose.Schema({
