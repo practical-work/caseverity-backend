@@ -72,12 +72,12 @@ app.post('/api/auth/request-access', async (req, res) => {
 
     const existingUser = await User.findOne({ email: cleanEmail });
     if (existingUser && existingUser.status === 'ACTIVE') {
-      return res.status(400).json({ message: 'Access Denied: An active official account already exists for this email.' });
+      return res.status(400).json({ message: 'Access Denied: Active account already exists.' });
     }
 
     const existingRequest = await AccessRequest.findOne({ email: cleanEmail });
     if (existingRequest && existingRequest.status === 'PENDING_APPROVAL') {
-      return res.status(400).json({ message: 'Access Denied: Your request is currently waiting for Administrator approval.' });
+      return res.status(400).json({ message: 'Access Denied: Waiting for Administrator approval.' });
     }
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
@@ -90,12 +90,17 @@ app.post('/api/auth/request-access', async (req, res) => {
 
     await transporter.sendMail({
       from: `"CaseVerity Admin" <${process.env.EMAIL_USER}>`,
-      to: cleanEmail, subject: 'CaseVerity - Verification OTP',
+      to: cleanEmail, 
+      subject: 'CaseVerity - Verification OTP',
       html: `<h3>Your Verification Code</h3><p>Your OTP is <b>${otp}</b>. It expires in 10 minutes.</p>`
     });
     
     res.json({ message: 'OTP sent successfully.' });
-  } catch (err) { res.status(500).json({ message: 'Failed to send OTP. Please try again.' }); }
+  } catch (err) { 
+    console.error("🔥 OTP Error:", err);
+    // Explicitly sends the exact crash reason back to the frontend alert box
+    res.status(500).json({ message: `System Error: ${err.message}` }); 
+  }
 });
 
 app.post('/api/auth/verify-otp', async (req, res) => {
@@ -117,7 +122,9 @@ app.post('/api/auth/verify-otp', async (req, res) => {
       html: `<h3>Request Successfully Submitted</h3><p>Your request is <b>PENDING APPROVAL</b> from the System Administrator.</p>`
     });
     res.json({ message: 'Email verified. Details sent to your email.' });
-  } catch (err) { res.status(500).json({ message: 'Verification failed' }); }
+  } catch (err) { 
+    res.status(500).json({ message: `Verification failed: ${err.message}` }); 
+  }
 });
 
 app.post('/api/auth/admin-login', (req, res) => {
@@ -163,7 +170,7 @@ app.post('/api/auth/admin/action', async (req, res) => {
       html: `<h3>Access Approved</h3><p><b>Officer ID:</b> ${specialId}</p><p><b>Secure Password:</b> ${strongPassword}</p>`
     });
     res.json({ message: 'Approved. ID and Password dispatched.' });
-  } catch (err) { res.status(500).json({ message: 'Action failed' }); }
+  } catch (err) { res.status(500).json({ message: `Action failed: ${err.message}` }); }
 });
 
 app.post('/api/auth/admin/manage-user', async (req, res) => {
@@ -185,7 +192,7 @@ app.post('/api/auth/admin/manage-user', async (req, res) => {
       user.status = 'ACTIVE'; user.accessExpiry = null; await user.save();
       return res.json({ message: 'User access restored.' });
     }
-  } catch(err) { res.status(500).json({ message: 'Management action failed' }); }
+  } catch(err) { res.status(500).json({ message: `Management action failed: ${err.message}` }); }
 });
 
 app.post('/api/auth/login', async (req, res) => {
@@ -199,7 +206,7 @@ app.post('/api/auth/login', async (req, res) => {
     if (user.status === 'EXPIRED') return res.status(403).json({ message: 'ACCESS DENIED: Authorization expired.' });
 
     res.json({ role: user.role, user: user.fullName, department: user.department });
-  } catch (err) { res.status(500).json({ message: 'Login failed' }); }
+  } catch (err) { res.status(500).json({ message: `Login failed: ${err.message}` }); }
 });
 
 app.post('/api/documents/upload', upload.single('file'), async (req, res) => {
@@ -211,7 +218,7 @@ app.post('/api/documents/upload', upload.single('file'), async (req, res) => {
     await newDoc.save();
     await createAuditLog(user, `DOCUMENT_UPLOADED_V${version}`, newDoc._id, hash);
     res.json({ message: 'Document secured', documentId: newDoc._id, fileHash: hash, version });
-  } catch (error) { res.status(500).json({ message: 'Upload failed' }); }
+  } catch (error) { res.status(500).json({ message: `Upload failed: ${error.message}` }); }
 });
 
 app.post('/api/documents/verify', async (req, res) => {
@@ -230,5 +237,6 @@ app.post('/api/documents/verify', async (req, res) => {
 });
 
 app.get('/api/audit-logs', async (req, res) => res.json(await AuditLog.find().sort({ timestamp: -1 })));
+
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`CaseVerity Server running on port ${PORT}`));
