@@ -70,14 +70,21 @@ app.post('/api/auth/request-access', async (req, res) => {
   try {
     const { fullName, email, phone, department, state, requestedRole } = req.body;
     
-    // Block if an ACTIVE User account already exists
-    const existingUser = await User.findOne({ email });
+    // Strict validation to prevent undefined matching
+    if (!email || !phone) {
+      return res.status(400).json({ message: 'Email and phone are required.' });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+
+    // 1. Block if an ACTIVE User account already exists
+    const existingUser = await User.findOne({ email: cleanEmail });
     if (existingUser && existingUser.status === 'ACTIVE') {
       return res.status(400).json({ message: 'Access Denied: An active official account already exists for this email.' });
     }
 
-    // Block if a Request is already PENDING
-    const existingRequest = await AccessRequest.findOne({ email });
+    // 2. Block if a Request is already PENDING for THIS SPECIFIC email
+    const existingRequest = await AccessRequest.findOne({ email: cleanEmail });
     if (existingRequest && ['PENDING_VERIFICATION', 'PENDING_APPROVAL'].includes(existingRequest.status)) {
       return res.status(400).json({ message: 'Access Denied: You already have a pending request. Please wait for Administrator action.' });
     }
@@ -85,42 +92,52 @@ app.post('/api/auth/request-access', async (req, res) => {
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     
     await AccessRequest.findOneAndUpdate(
-      { email },
+      { email: cleanEmail },
       { fullName, phone, department, state, requestedRole, otp, otpExpiry: Date.now() + 10 * 60000, status: 'PENDING_VERIFICATION' },
       { upsert: true, new: true }
     );
 
     await transporter.sendMail({
       from: `"CaseVerity Admin" <${process.env.EMAIL_USER}>`,
-      to: email, subject: 'CaseVerity - Verification OTP',
+      to: cleanEmail, subject: 'CaseVerity - Verification OTP',
       html: `<h3>Your Verification Code</h3><p>Your OTP is <b>${otp}</b>. It expires in 10 minutes.</p>`
     });
     res.json({ message: 'OTP sent.' });
-  } catch (err) { res.status(500).json({ error: 'Failed to send OTP' }); }
+  } catch (err) { 
+    res.status(500).json({ message: 'Failed to send OTP. Please try again.' }); 
+  }
 });
 
 app.post('/api/auth/verify-otp', async (req, res) => {
   try {
     const { email, otp } = req.body;
-    const request = await AccessRequest.findOne({ email, otp, otpExpiry: { $gt: Date.now() } });
+    if (!email || !otp) return res.status(400).json({ message: 'Missing email or OTP.' });
+
+    const cleanEmail = email.trim().toLowerCase();
+    const request = await AccessRequest.findOne({ email: cleanEmail, otp, otpExpiry: { $gt: Date.now() } });
+    
     if (!request) return res.status(400).json({ message: 'Invalid or expired OTP.' });
 
-    request.isEmailVerified = true; request.status = 'PENDING_APPROVAL'; request.otp = undefined;
+    request.isEmailVerified = true; 
+    request.status = 'PENDING_APPROVAL'; 
+    request.otp = undefined;
     await request.save();
 
     await transporter.sendMail({
       from: `"CaseVerity" <${process.env.EMAIL_USER}>`,
-      to: email, subject: 'CaseVerity - Request Pending Approval',
+      to: cleanEmail, subject: 'CaseVerity - Request Pending Approval',
       html: `<h3>Request Successfully Submitted</h3>
              <p>Your request is currently <b>PENDING APPROVAL</b> from the System Administrator.</p>
              <p><b>Submitted Details:</b></p>
              <ul><li>Name: ${request.fullName}</li><li>Role: ${request.requestedRole}</li><li>Department: ${request.department}</li></ul>`
     });
     res.json({ message: 'Email verified. Details sent to your email.' });
-  } catch (err) { res.status(500).json({ error: 'Verification failed' }); }
+  } catch (err) { res.status(500).json({ message: 'Verification failed' }); }
 });
 
 app.post('/api/auth/admin-login', (req, res) => {
+  if (!req.body.email || !req.body.password) return res.status(400).json({ message: 'Missing credentials.' });
+
   const email = req.body.email.trim();
   const password = req.body.password.trim();
 
@@ -164,7 +181,7 @@ app.post('/api/auth/admin/action', async (req, res) => {
       html: `<h3>Access Approved</h3><p><b>Officer ID:</b> ${specialId}</p><p><b>Secure Password:</b> ${strongPassword}</p>`
     });
     res.json({ message: 'Approved. ID and Password dispatched.' });
-  } catch (err) { res.status(500).json({ error: 'Action failed' }); }
+  } catch (err) { res.status(500).json({ message: 'Action failed' }); }
 });
 
 app.post('/api/auth/admin/manage-user', async (req, res) => {
@@ -201,15 +218,24 @@ app.post('/api/auth/admin/manage-user', async (req, res) => {
       });
       return res.json({ message: 'User access restored.' });
     }
-  } catch(err) { res.status(500).json({ error: 'Management action failed' }); }
+  } catch(err) { res.status(500).json({ message: 'Management action failed' }); }
 });
 
 app.post('/api/auth/login', async (req, res) => {
   try {
+    if (!req.body.email || !req.body.password) return res.status(400).json({ message: 'Missing credentials.' });
+
     const emailOrId = req.body.email.trim();
     const password = req.body.password.trim();
 
-    const user = await User.findOne({ $or: [{ email: emailOrId }, { officerId: emailOrId }] });
+    // Check both exact match for OfficerID or lowercased for email
+    const user = await User.findOne({ 
+      $or: [
+        { email: emailOrId.toLowerCase() }, 
+        { officerId: emailOrId }
+      ] 
+    });
+    
     if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
@@ -218,7 +244,7 @@ app.post('/api/auth/login', async (req, res) => {
     if (user.status === 'EXPIRED') return res.status(403).json({ message: 'ACCESS DENIED: Authorization expired.' });
 
     res.json({ role: user.role, user: user.fullName, department: user.department });
-  } catch (err) { res.status(500).json({ error: 'Login failed' }); }
+  } catch (err) { res.status(500).json({ message: 'Login failed' }); }
 });
 
 // --- DOCUMENT MANAGEMENT ROUTES ---
@@ -233,7 +259,7 @@ app.post('/api/documents/upload', upload.single('file'), async (req, res) => {
     await createAuditLog(user, `DOCUMENT_UPLOADED_V${version}`, newDoc._id, hash);
 
     res.json({ message: 'Document secured', documentId: newDoc._id, fileHash: hash, version });
-  } catch (error) { res.status(500).json({ error: 'Upload failed' }); }
+  } catch (error) { res.status(500).json({ message: 'Upload failed' }); }
 });
 
 app.post('/api/documents/verify', async (req, res) => {
@@ -249,10 +275,11 @@ app.post('/api/documents/verify', async (req, res) => {
       await createAuditLog(user || 'System', 'TAMPERING_DETECTED', doc._id, providedHash);
       res.status(400).json({ message: 'Tampering Detected: Hash mismatch.' });
     }
-  } catch (error) { res.status(500).json({ error: 'Verification failed' }); }
+  } catch (error) { res.status(500).json({ message: 'Verification failed' }); }
 });
 
 app.get('/api/audit-logs', async (req, res) => res.json(await AuditLog.find().sort({ timestamp: -1 })));
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`CaseVerity Server running on port ${PORT}`));
+          
