@@ -7,6 +7,11 @@ const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const bcrypt = require('bcryptjs');
 
+// CRITICAL FIX: Force Node.js to use IPv4 instead of IPv6 for all network requests.
+// This completely stops the "connect ENETUNREACH 2607:..." error on Render.
+const dns = require('dns');
+dns.setDefaultResultOrder('ipv4first');
+
 const app = express();
 app.use(cors({
   origin: ['https://caseverity-frontend.vercel.app', 'http://localhost:3000'],
@@ -22,7 +27,6 @@ mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('✅ MongoDB Connected'))
   .catch(err => console.log('❌ DB Error:', err));
 
-// Explicit SMTP configuration to fix ETIMEDOUT on Render
 const transporter = nodemailer.createTransport({
   host: 'smtp.gmail.com',
   port: 465,
@@ -35,7 +39,7 @@ const transporter = nodemailer.createTransport({
     rejectUnauthorized: false
   },
   connectionTimeout: 20000,
-  family: 4
+  family: 4 
 });
 
 const accessRequestSchema = new mongoose.Schema({
@@ -93,7 +97,6 @@ app.post('/api/auth/request-access', async (req, res) => {
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     
-    // Updated Mongoose syntax to resolve warnings
     await AccessRequest.findOneAndUpdate(
       { email: cleanEmail },
       { fullName, phone, department, state, requestedRole, otp, otpExpiry: Date.now() + 10 * 60000, status: 'PENDING_VERIFICATION' },
@@ -251,3 +254,4 @@ app.get('/api/audit-logs', async (req, res) => res.json(await AuditLog.find().so
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`CaseVerity Server running on port ${PORT}`));
+      
